@@ -1,10 +1,10 @@
 """Policy evaluation engine for security scan results.
 
-Provides the PolicyEngine class that evaluates a ScanResult
-against defined security policies and returns a pass/fail decision.
+Provides the PolicyEngine class that evaluates one or more ScanResult
+objects against defined security policies and returns a pass/fail decision.
 """
 
-from typing import Tuple
+from typing import List, Tuple
 
 from scanner.models.scan_result import ScanResult
 
@@ -13,43 +13,55 @@ class PolicyEngine:
     """Evaluates scan results against security policies.
 
     Current policy rules:
-        - FAIL if critical severity findings > 0
-        - FAIL if high severity findings > 0
+        - FAIL if critical severity findings > 0 (any scanner)
+        - FAIL if high severity findings > 5 (any scanner)
         - PASS otherwise
+
+    The engine is scanner-agnostic: it operates purely on the normalised
+    ScanResult model, so it works for any number and type of scanners.
     """
 
-    def evaluate(self, result: ScanResult) -> Tuple[bool, str]:
-        """Evaluate a ScanResult against the security policy.
+    #: Maximum allowed high-severity findings per scanner.
+    HIGH_THRESHOLD: int = 5
+
+    def evaluate(self, results: List[ScanResult]) -> Tuple[bool, str]:
+        """Evaluate a list of ScanResults against the security policy.
 
         Args:
-            result: A ScanResult instance to evaluate.
+            results: A list of ScanResult instances to evaluate.
 
         Returns:
             A tuple of (passed, reason):
-                - passed: True if the scan passes policy, False otherwise.
+                - passed: True if all scans pass policy, False otherwise.
                 - reason: A human-readable explanation of the decision.
         """
-        if result.critical > 0 and result.high > 0:
+        if not results:
             return (
-                False,
-                f"Critical ({result.critical}) and High ({result.high}) "
-                f"severity findings detected.",
+                True,
+                "No scan results provided. Scan passed by default.",
             )
 
-        if result.critical > 0:
-            return (
-                False,
-                f"Critical severity findings detected ({result.critical}).",
-            )
+        reasons: List[str] = []
 
-        if result.high > 0:
-            return (
-                False,
-                f"High severity findings detected ({result.high}).",
-            )
+        for result in results:
+            if result.critical > 0:
+                reasons.append(
+                    f"{result.tool}: {result.critical} critical "
+                    f"severity finding(s) detected."
+                )
+
+            if result.high > self.HIGH_THRESHOLD:
+                reasons.append(
+                    f"{result.tool}: {result.high} high severity "
+                    f"finding(s) exceed the threshold of "
+                    f"{self.HIGH_THRESHOLD}."
+                )
+
+        if reasons:
+            return (False, "; ".join(reasons))
 
         return (
             True,
-            "No critical or high severity findings. Scan passed.",
+            "No critical findings and no high-severity threshold "
+            "exceeded. Scan passed.",
         )
-

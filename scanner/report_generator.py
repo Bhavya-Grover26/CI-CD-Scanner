@@ -1,7 +1,7 @@
 """HTML security report generator.
 
 Provides the HTMLReportGenerator class that creates a professional,
-mobile-responsive HTML report from scan results.
+mobile-responsive HTML report from one or more ScanResult objects.
 """
 
 import html
@@ -13,9 +13,10 @@ from scanner.models.scan_result import ScanResult
 
 
 class HTMLReportGenerator:
-    """Generates a professional HTML security report from a ScanResult.
+    """Generates a professional HTML security report from ScanResults.
 
-    Uses only inline CSS for portability and requires no external libraries.
+    Supports multiple scanners/tools. Uses only inline CSS for portability
+    and requires no external libraries.
     """
 
     # Severity color mapping.
@@ -34,9 +35,12 @@ class HTMLReportGenerator:
         "LOW": "#E2F0FF",
     }
 
+    #: Tool name recognised as the flat-file dependency scanner.
+    TRIVY_TOOL_NAME: str = "Trivy"
+
     def generate(
         self,
-        result: ScanResult,
+        results: List[ScanResult],
         passed: bool,
         reason: str,
         output_path: Path,
@@ -44,8 +48,8 @@ class HTMLReportGenerator:
         """Generate an HTML report file.
 
         Args:
-            result: The ScanResult containing all findings.
-            passed: Whether the scan passed the policy.
+            results: A list of ScanResult objects containing findings.
+            passed: Whether the scans passed the policy.
             reason: Human-readable reason for the policy decision.
             output_path: Where to write the HTML file.
 
@@ -57,14 +61,16 @@ class HTMLReportGenerator:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         status_text = "PASSED" if passed else "FAILED"
         status_color = "#28A745" if passed else "#DC3545"
+        tool_names = ", ".join(r.tool for r in results)
 
         html_content = self._build_html(
-            result=result,
+            results=results,
             passed=passed,
             reason=reason,
             timestamp=timestamp,
             status_text=status_text,
             status_color=status_color,
+            tool_names=tool_names,
         )
 
         with open(output_path, "w", encoding="utf-8") as f:
@@ -74,23 +80,24 @@ class HTMLReportGenerator:
 
     def _build_html(
         self,
-        result: ScanResult,
+        results: List[ScanResult],
         passed: bool,
         reason: str,
         timestamp: str,
         status_text: str,
         status_color: str,
+        tool_names: str,
     ) -> str:
         """Build the complete HTML document as a string."""
-        summary_cards = self._render_summary_cards(result)
-        findings_table = self._render_findings_table(result.findings)
+        summary_cards = self._render_summary_cards(results)
+        sections = self._render_tool_sections(results)
 
         return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Security Scan Report - {html.escape(result.tool)}</title>
+    <title>Security Scan Report - {html.escape(tool_names)}</title>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{
@@ -135,7 +142,7 @@ class HTMLReportGenerator:
         }}
         .cards {{
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
             gap: 16px;
             margin-bottom: 24px;
         }}
@@ -147,15 +154,20 @@ class HTMLReportGenerator:
             text-align: center;
         }}
         .card .card-value {{
-            font-size: 36px;
+            font-size: 32px;
             font-weight: 700;
             margin-bottom: 4px;
         }}
         .card .card-label {{
-            font-size: 13px;
+            font-size: 12px;
             text-transform: uppercase;
             letter-spacing: 0.5px;
             color: #6c757d;
+        }}
+        .card .card-tool {{
+            font-size: 11px;
+            color: #adb5bd;
+            margin-top: 2px;
         }}
         .card-critical .card-value {{ color: #8B0000; }}
         .card-high .card-value {{ color: #DC3545; }}
@@ -224,6 +236,15 @@ class HTMLReportGenerator:
             color: #6c757d;
             word-break: break-all;
         }}
+        .pkg-name {{
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+            font-size: 13px;
+        }}
+        .version {{
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+            font-size: 12px;
+            color: #6c757d;
+        }}
         .footer {{
             text-align: center;
             font-size: 13px;
@@ -252,7 +273,7 @@ class HTMLReportGenerator:
             <div class="header-left">
                 <h1>Security Scan Report</h1>
                 <div class="subtitle">
-                    Tool: {html.escape(result.tool)} &nbsp;|&nbsp;
+                    Tools: {html.escape(tool_names)} &nbsp;|&nbsp;
                     Scan Date: {html.escape(timestamp)}
                 </div>
             </div>
@@ -269,11 +290,8 @@ class HTMLReportGenerator:
             {summary_cards}
         </div>
 
-        <!-- Findings Detail -->
-        <div class="section">
-            <h2>Detailed Findings</h2>
-            {findings_table}
-        </div>
+        <!-- Per-tool Sections -->
+        {sections}
 
         <!-- Footer -->
         <div class="footer">
@@ -283,26 +301,121 @@ class HTMLReportGenerator:
 </body>
 </html>"""
 
-    def _render_summary_cards(self, result: ScanResult) -> str:
-        """Render the summary statistics cards."""
-        metrics = [
-            ("Critical", result.critical, "card-critical"),
-            ("High", result.high, "card-high"),
-            ("Medium", result.medium, "card-medium"),
-            ("Low", result.low, "card-low"),
-            ("Total", result.total, "card-total"),
-        ]
+    def _render_summary_cards(self, results: List[ScanResult]) -> str:
+        """Render the summary statistics cards for all tools."""
         cards_html = ""
-        for label, value, css_class in metrics:
-            cards_html += f"""
+        for result in results:
+            metrics = [
+                ("Critical", result.critical, "card-critical"),
+                ("High", result.high, "card-high"),
+                ("Medium", result.medium, "card-medium"),
+                ("Low", result.low, "card-low"),
+                ("Total", result.total, "card-total"),
+            ]
+            for label, value, css_class in metrics:
+                cards_html += f"""
             <div class="card {css_class}">
                 <div class="card-value">{value}</div>
                 <div class="card-label">{label}</div>
+                <div class="card-tool">{html.escape(result.tool)}</div>
             </div>"""
         return cards_html
 
+    def _render_tool_sections(self, results: List[ScanResult]) -> str:
+        """Render a findings section for each scan tool."""
+        sections = ""
+        for result in results:
+            if result.tool == self.TRIVY_TOOL_NAME:
+                sections += self._render_trivy_section(result)
+            else:
+                sections += self._render_generic_section(result)
+        return sections
+
+    def _render_trivy_section(self, result: ScanResult) -> str:
+        """Render the Dependency Vulnerabilities section for Trivy."""
+        heading = "Dependency Vulnerabilities (Trivy)"
+        table = self._render_trivy_table(result.findings)
+        return f"""<div class="section">
+            <h2>{html.escape(heading)}</h2>
+            {table}
+        </div>"""
+
+    def _render_trivy_table(self, findings: List[dict]) -> str:
+        """Render a table of Trivy dependency vulnerabilities."""
+        if not findings:
+            return (
+                '<div class="no-findings">'
+                '<div class="icon">&#9989;</div>'
+                "<div>No dependency vulnerabilities detected.</div>"
+                "</div>"
+            )
+
+        rows = ""
+        for idx, f in enumerate(findings, 1):
+            severity = f.get("severity", "LOW").upper()
+            sev_color = self.SEVERITY_COLORS.get(severity, "#6c757d")
+            sev_bg = self.SEVERITY_BG.get(severity, "#f8f9fa")
+
+            cve = html.escape(f.get("id", "unknown"))
+            package = html.escape(f.get("package", "unknown"))
+            installed = html.escape(f.get("installed_version", "unknown"))
+            fixed = html.escape(f.get("fixed_version", "N/A"))
+            title = html.escape(f.get("title", ""))
+            description = html.escape(f.get("description", ""))
+            target = html.escape(f.get("file", "unknown"))
+
+            message = title or description
+
+            rows += f"""
+            <tr style="background: {sev_bg};">
+                <td>{idx}</td>
+                <td>
+                    <span class="severity-tag" style="background: {sev_color};">
+                        {severity}
+                    </span>
+                </td>
+                <td>
+                    <div class="finding-id">{cve}</div>
+                    <div style="font-size: 12px; color: #6c757d;">{target}</div>
+                </td>
+                <td><div class="pkg-name">{package}</div></td>
+                <td><div class="version">{installed}</div></td>
+                <td><div class="version">{fixed}</div></td>
+                <td>
+                    <div>{message}</div>
+                </td>
+            </tr>"""
+
+        return f"""<div style="overflow-x: auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width: 40px;">#</th>
+                        <th style="width: 100px;">Severity</th>
+                        <th style="width: 200px;">CVE</th>
+                        <th>Package</th>
+                        <th style="width: 130px;">Installed</th>
+                        <th style="width: 130px;">Fixed</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {rows}
+                </tbody>
+            </table>
+        </div>"""
+
+    def _render_generic_section(self, result: ScanResult) -> str:
+        """Render a generic findings section (e.g. Semgrep)."""
+        heading = f"{result.tool} Findings"
+        table = self._render_findings_table(result.findings)
+        return f"""<div class="section">
+            <h2>{html.escape(heading)}</h2>
+            {table}
+        </div>"""
+
     def _render_findings_table(self, findings: List[dict]) -> str:
-        """Render the findings detail table or a no-findings message."""
+        """Render the generic findings detail table or a no-findings message."""
         if not findings:
             return (
                 '<div class="no-findings">'
@@ -361,4 +474,3 @@ class HTMLReportGenerator:
                 </tbody>
             </table>
         </div>"""
-
