@@ -1,0 +1,5 @@
+# SAST SCA Pipeline - Phase 1
+# Only Semgrep is required. Trivy and Gitleaks will be added in future phases.
+
+semgrep>=1.50.0
+
